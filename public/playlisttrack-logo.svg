@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" fill="#0a0a0a" rx="45"/>
+  <!-- Playlist lines -->
+  <g fill="none" stroke="#06b6d4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="36" y1="48" x2="96" y2="48"/>
+    <line x1="36" y1="84" x2="96" y2="84"/>
+    <line x1="36" y1="120" x2="96" y2="120"/>
+    <line x1="36" y1="156" x2="96" y2="156"/>
+  </g>
+  <!-- Play button -->
+  <polygon points="130,80 130,164 164,122" fill="#06b6d4"/>
+</svg>

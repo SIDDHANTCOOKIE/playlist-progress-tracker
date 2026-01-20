@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <!-- Background circle -->
+  <circle cx="96" cy="96" r="90" fill="#0a0a0a" stroke="#06b6d4" stroke-width="2"/>
+  
+  <!-- Playlist lines -->
+  <g fill="none" stroke="#06b6d4" stroke-width="6" stroke-linecap="round">
+    <line x1="30" y1="52" x2="70" y2="52"/>
+    <line x1="30" y1="80" x2="70" y2="80"/>
+    <line x1="30" y1="108" x2="70" y2="108"/>
+    <line x1="30" y1="136" x2="70" y2="136"/>
+  </g>
+  
+  <!-- Play triangle -->
+  <polygon points="100,60 100,132 150,96" fill="#06b6d4"/>
+</svg>
