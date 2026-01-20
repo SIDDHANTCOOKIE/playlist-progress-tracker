@@ -151,7 +151,16 @@ const App = () => {
 
   // --- YouTube Player Logic ---
 
-  const onPlayerStateChange = (event) => {
+  const handleVideoComplete = useCallback((videoId) => {
+    setCheckedIds(prev => {
+      if (!prev.includes(videoId)) {
+        return [...prev, videoId];
+      }
+      return prev;
+    });
+  }, []);
+
+  const onPlayerStateChange = useCallback((event) => {
     // YT.PlayerState.ENDED === 0
     if (event.data === 0) {
       const videoData = event.target.getVideoData();
@@ -159,16 +168,7 @@ const App = () => {
          handleVideoComplete(videoData.video_id);
       }
     }
-  };
-
-  const handleVideoComplete = (videoId) => {
-    setCheckedIds(prev => {
-      if (!prev.includes(videoId)) {
-        return [...prev, videoId];
-      }
-      return prev;
-    });
-  };
+  }, [handleVideoComplete]);
 
   const initializePlayer = useCallback(() => {
     if (!currentVideo) return;
@@ -186,7 +186,7 @@ const App = () => {
         }
       });
     }
-  }, [currentVideo]);
+  }, [currentVideo, onPlayerStateChange]);
 
   // --- Initialization & Storage ---
 
