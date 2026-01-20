@@ -227,18 +227,23 @@ const App = () => {
     checkMobile();
     window.addEventListener('resize', checkMobile);
 
-    // Load YouTube IFrame API
+    // Load YouTube IFrame API (only once on mount)
     if (!window.YT) {
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
-      window.onYouTubeIframeAPIReady = initializePlayer;
+      const loadPlayer = () => {
+        // This will be called when YT API is ready
+        if (window.YT && window.YT.Player) {
+          // Player will be initialized by the other useEffect when currentVideo is set
+        }
+      };
+      window.onYouTubeIframeAPIReady = loadPlayer;
       document.body.appendChild(tag);
-    } else {
-      initializePlayer();
     }
 
     return () => window.removeEventListener('resize', checkMobile);
-  }, [initializePlayer]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount
 
   // Persistence Effects
   useEffect(() => localStorage.setItem('playlist-tracker-progress', JSON.stringify(checkedIds)), [checkedIds]);
@@ -256,7 +261,8 @@ const App = () => {
     if (currentVideo && window.YT && window.YT.Player && !playerRef.current) {
       initializePlayer();
     }
-  }, [currentVideo, initializePlayer]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentVideo]); // Only re-initialize when currentVideo changes
 
   useEffect(() => {
     if (!currentVideo) return;
@@ -315,34 +321,42 @@ const App = () => {
 
     setIsLoading(true);
     try {
-      // 1. Fetch Playlist Items (max 50)
-      const plResponse = await fetch(
-        `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${playlistId}&key=${apiKey}`
-      );
-      const plData = await plResponse.json();
+      // 1. Fetch ALL Playlist Items (handle pagination)
+      let allItems = [];
+      let nextPageToken = null;
       
-      if (plData.error) throw new Error(plData.error.message);
+      do {
+        const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${playlistId}&key=${apiKey}${nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
+        const plResponse = await fetch(url);
+        const plData = await plResponse.json();
+        
+        if (plData.error) throw new Error(plData.error.message);
+        
+        allItems = allItems.concat(plData.items.filter(i => i.snippet.title !== 'Private video'));
+        nextPageToken = plData.nextPageToken;
+      } while (nextPageToken);
 
-      const items = plData.items.filter(i => i.snippet.title !== 'Private video');
-      if (items.length === 0) throw new Error("No videos found.");
+      if (allItems.length === 0) throw new Error("No videos found.");
 
-      // 2. Fetch Video Details (for Duration)
-      const videoIds = items.map(i => i.snippet.resourceId.videoId).join(',');
-      const vidResponse = await fetch(
-        `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoIds}&key=${apiKey}`
-      );
-      const vidData = await vidResponse.json();
-      
-      // Map durations
+      // 2. Fetch Video Details (for Duration) - in batches of 50
       const durationMap = {};
-      if (vidData.items) {
-        vidData.items.forEach(v => {
-          durationMap[v.id] = v.contentDetails.duration;
-        });
+      for (let i = 0; i < allItems.length; i += 50) {
+        const batch = allItems.slice(i, i + 50);
+        const videoIds = batch.map(item => item.snippet.resourceId.videoId).join(',');
+        const vidResponse = await fetch(
+          `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoIds}&key=${apiKey}`
+        );
+        const vidData = await vidResponse.json();
+        
+        if (vidData.items) {
+          vidData.items.forEach(v => {
+            durationMap[v.id] = v.contentDetails.duration;
+          });
+        }
       }
 
       // 3. Merge Data
-      const newVideos = items.map(item => {
+      const newVideos = allItems.map(item => {
         const vidId = item.snippet.resourceId.videoId;
         const isoDuration = durationMap[vidId];
         return {
@@ -351,6 +365,12 @@ const App = () => {
           duration: isoDuration || '??:??' 
         };
       });
+
+      // Destroy old player if it exists
+      if (playerRef.current && playerRef.current.destroy) {
+        playerRef.current.destroy();
+        playerRef.current = null;
+      }
 
       // Batch state updates to prevent stale UI
       setCheckedIds([]);
