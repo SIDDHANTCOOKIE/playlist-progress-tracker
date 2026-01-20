@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
-  Play, 
   ExternalLink, 
   CheckCircle2, 
   Circle, 
@@ -18,7 +17,6 @@ import {
   Download,
   Link as LinkIcon,
   Loader2,
-  Clock,
   BookOpen,
   Palette,
   Github,
@@ -107,9 +105,6 @@ const downloadNotesAsText = (notes, videos, currentVideo) => {
   URL.revokeObjectURL(url);
 };
 
-// --- Placeholder Data ---
-const DEFAULT_VIDEOS = [];
-
 const DEFAULT_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PL424yXxkpGPkx_NM7p2FonWIkZgEitby2";
 
 // --- Theme Definitions ---
@@ -150,11 +145,48 @@ const App = () => {
   // Manual Add Form
   const [newVideoUrl, setNewVideoUrl] = useState('');
   const [newVideoTitle, setNewVideoTitle] = useState('');
-  const bmcRef = useRef(null);
 
   // Refs
   const playerRef = useRef(null);
-  const playerContainerRef = useRef(null);
+
+  // --- YouTube Player Logic ---
+
+  const onPlayerStateChange = (event) => {
+    // YT.PlayerState.ENDED === 0
+    if (event.data === 0) {
+      const videoData = event.target.getVideoData();
+      if (videoData && videoData.video_id) {
+         handleVideoComplete(videoData.video_id);
+      }
+    }
+  };
+
+  const handleVideoComplete = (videoId) => {
+    setCheckedIds(prev => {
+      if (!prev.includes(videoId)) {
+        return [...prev, videoId];
+      }
+      return prev;
+    });
+  };
+
+  const initializePlayer = useCallback(() => {
+    if (!currentVideo) return;
+    if (window.YT && window.YT.Player && !playerRef.current) {
+      playerRef.current = new window.YT.Player('youtube-player', {
+        height: '100%',
+        width: '100%',
+        videoId: currentVideo.id,
+        playerVars: {
+          'playsinline': 1,
+          'rel': 0
+        },
+        events: {
+          'onStateChange': onPlayerStateChange
+        }
+      });
+    }
+  }, [currentVideo]);
 
   // --- Initialization & Storage ---
 
@@ -206,7 +238,7 @@ const App = () => {
     }
 
     return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+  }, [initializePlayer]);
 
   // Persistence Effects
   useEffect(() => localStorage.setItem('playlist-tracker-progress', JSON.stringify(checkedIds)), [checkedIds]);
@@ -219,51 +251,12 @@ const App = () => {
     updateThemeColors(THEMES[currentTheme]);
   }, [currentTheme]);
 
-  // --- YouTube Player Logic ---
-
-  const initializePlayer = () => {
-    if (!currentVideo) return;
-    if (window.YT && window.YT.Player && !playerRef.current) {
-      playerRef.current = new window.YT.Player('youtube-player', {
-        height: '100%',
-        width: '100%',
-        videoId: currentVideo.id,
-        playerVars: {
-          'playsinline': 1,
-          'rel': 0
-        },
-        events: {
-          'onStateChange': onPlayerStateChange
-        }
-      });
-    }
-  };
-
-  const onPlayerStateChange = (event) => {
-    // YT.PlayerState.ENDED === 0
-    if (event.data === 0) {
-      const videoData = event.target.getVideoData();
-      if (videoData && videoData.video_id) {
-         handleVideoComplete(videoData.video_id);
-      }
-    }
-  };
-
-  const handleVideoComplete = (videoId) => {
-    setCheckedIds(prev => {
-      if (!prev.includes(videoId)) {
-        return [...prev, videoId];
-      }
-      return prev;
-    });
-  };
-
   // Sync Player with React State
   useEffect(() => {
     if (currentVideo && window.YT && window.YT.Player && !playerRef.current) {
       initializePlayer();
     }
-  }, [currentVideo]);
+  }, [currentVideo, initializePlayer]);
 
   useEffect(() => {
     if (!currentVideo) return;
@@ -421,8 +414,6 @@ const App = () => {
     e.stopPropagation();
     window.open(`https://www.youtube.com/watch?v=${id}`, '_blank');
   };
-
-  const theme = THEMES[currentTheme];
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-cyan-500/30">
@@ -710,8 +701,6 @@ const App = () => {
                 onClick={() => setIsEditMode(!isEditMode)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all"
                 style={{
-                  backgroundColor: isEditMode ? THEMES[currentTheme].bg : '',
-                  color: isEditMode ? THEMES[currentTheme].text : '',
                   border: isEditMode ? `1px solid ${THEMES[currentTheme].primary}` : 'none',
                   background: isEditMode ? THEMES[currentTheme].bg : '#404040',
                   color: isEditMode ? THEMES[currentTheme].text : '#a3a3a3'
