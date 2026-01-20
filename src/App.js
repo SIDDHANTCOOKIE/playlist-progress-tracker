@@ -352,12 +352,15 @@ const App = () => {
         };
       });
 
-      setVideos(newVideos);
-      if (newVideos.length > 0) setCurrentVideo(newVideos[0]);
+      // Batch state updates to prevent stale UI
       setCheckedIds([]);
+      setNotes({});
+      setVideos(newVideos);
+      setCurrentVideo(newVideos.length > 0 ? newVideos[0] : null);
       setIsEditMode(false);
       setShowOnboarding(false);
       localStorage.setItem('playlist-tracker-onboarded', '1');
+      
       alert(`Imported ${newVideos.length} videos with duration data!`);
 
     } catch (error) {
