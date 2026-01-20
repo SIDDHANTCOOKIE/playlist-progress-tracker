@@ -27,7 +27,7 @@ import {
 // Removed import.meta check to prevent build warnings in ES2015 targets.
 // Users can enter their API key directly in the UI settings.
 const ENV_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || '';
-const GITHUB_REPO_URL = 'https://github.com/yourusername/playlist-tracker'; // Update with your repo URL
+const GITHUB_REPO_URL = 'https://github.com/siddhantcookie';
 
 // --- Helper: Duration Parsing ---
 const parseDurationToSeconds = (durationStr) => {
