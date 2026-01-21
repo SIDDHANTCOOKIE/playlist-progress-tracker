@@ -6,7 +6,6 @@ import {
   MoreVertical, 
   ListVideo,
   Trophy,
-  Youtube,
   Menu,
   X,
   Plus,
@@ -15,12 +14,14 @@ import {
   RotateCcw,
   Edit3,
   Download,
-  Link as LinkIcon,
   Loader2,
   BookOpen,
   Palette,
   Github,
-  Coffee
+  Coffee,
+  Flame,
+  ArrowLeft,
+  Layers
 } from 'lucide-react';
 
 // --- Environment Variable for API Key ---
@@ -57,6 +58,27 @@ const formatSecondsToTime = (totalSeconds) => {
   const m = Math.floor((totalSeconds % 3600) / 60);
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
+};
+
+const computeStats = (videos = [], checkedIds = []) => {
+  let totalSec = 0;
+  let completedSec = 0;
+
+  videos.forEach(v => {
+    const sec = parseDurationToSeconds(v.duration);
+    totalSec += sec;
+    if (checkedIds.includes(v.id)) {
+      completedSec += sec;
+    }
+  });
+
+  return {
+    total: formatSecondsToTime(totalSec),
+    completed: formatSecondsToTime(completedSec),
+    percentage: totalSec > 0 ? Math.round((completedSec / totalSec) * 100) : 0,
+    totalSeconds: totalSec,
+    completedSeconds: completedSec
+  };
 };
 
 const downloadNotesAsText = (notes, videos, currentVideo) => {
@@ -116,6 +138,26 @@ const THEMES = {
   blue: { name: 'Blue', primary: '#3b82f6', primary600: '#2563eb', text: '#93c5fd', bg: 'rgba(59, 130, 246, 0.2)' }
 };
 
+const isDefaultPlaylistName = (name = '') => {
+  const trimmed = name.trim();
+  if (!trimmed) return true;
+  if (trimmed === 'My Playlist') return true;
+  return /^Playlist\s+\d+$/i.test(trimmed);
+};
+
+const buildPlaylistShell = (name = 'My Playlist', source = DEFAULT_PLAYLIST_URL) => ({
+  id: `pl-${(window.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 10))}`,
+  name,
+  source,
+  videos: [],
+  checkedIds: [],
+  notes: {},
+  currentVideoId: null,
+  thumbnail: null,
+  createdAt: Date.now(),
+  updatedAt: Date.now()
+});
+
 const updateThemeColors = (theme) => {
   document.documentElement.style.setProperty('--theme-primary', theme.primary);
   document.documentElement.style.setProperty('--theme-primary-600', theme.primary600);
@@ -124,6 +166,14 @@ const updateThemeColors = (theme) => {
 
 const App = () => {
   // --- State ---
+  const [playlists, setPlaylists] = useState([]);
+  const [activePlaylistId, setActivePlaylistId] = useState(null);
+  const [view, setView] = useState('dashboard');
+  const [streak, setStreak] = useState({ current: 0, best: 0, lastDate: null });
+
+  const [newPlaylistName, setNewPlaylistName] = useState('');
+  const [newPlaylistUrl, setNewPlaylistUrl] = useState('');
+
   const [videos, setVideos] = useState([]);
   const [checkedIds, setCheckedIds] = useState([]);
   const [currentVideo, setCurrentVideo] = useState(null);
@@ -135,7 +185,12 @@ const App = () => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [currentTheme, setCurrentTheme] = useState('cyan');
   const [showThemeMenu, setShowThemeMenu] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('playlist-tracker-onboarded') !== '1';
+  });
+
+  const activePlaylist = useMemo(() => playlists.find(p => p.id === activePlaylistId) || null, [playlists, activePlaylistId]);
   
   // Import/Settings State
   const [playlistSource, setPlaylistSource] = useState(DEFAULT_PLAYLIST_URL);
@@ -148,17 +203,46 @@ const App = () => {
 
   // Refs
   const playerRef = useRef(null);
+  const isLoadingPlaylistData = useRef(false);
+  const [isYTReady, setIsYTReady] = useState(false);
+  const hasHydrated = useRef(false);
+  const hadStoredPlaylists = useRef(false);
+  const hasLoadedInitialPlaylist = useRef(false);
+  const prevPlaylistsLength = useRef(0);
 
   // --- YouTube Player Logic ---
+
+  const normalizeDate = (value) => new Date(value).toISOString().split('T')[0];
+
+  const updateStreakOnCompletion = useCallback(() => {
+    const today = normalizeDate(new Date());
+    setStreak(prev => {
+      if (!prev.lastDate) {
+        return { current: 1, best: 1, lastDate: today };
+      }
+
+      const last = prev.lastDate;
+      const diffDays = Math.floor((new Date(today) - new Date(last)) / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 0) return prev;
+      if (diffDays === 1) {
+        const nextCurrent = prev.current + 1;
+        return { current: nextCurrent, best: Math.max(prev.best, nextCurrent), lastDate: today };
+      }
+
+      return { current: 1, best: Math.max(prev.best, 1), lastDate: today };
+    });
+  }, []);
 
   const handleVideoComplete = useCallback((videoId) => {
     setCheckedIds(prev => {
       if (!prev.includes(videoId)) {
+        updateStreakOnCompletion();
         return [...prev, videoId];
       }
       return prev;
     });
-  }, []);
+  }, [updateStreakOnCompletion]);
 
   const onPlayerStateChange = useCallback((event) => {
     // YT.PlayerState.ENDED === 0
@@ -191,33 +275,75 @@ const App = () => {
   // --- Initialization & Storage ---
 
   useEffect(() => {
-    // Load from LocalStorage
-    const savedProgress = localStorage.getItem('playlist-tracker-progress');
-    const savedVideos = localStorage.getItem('playlist-tracker-videos');
+    const savedPlaylistsRaw = localStorage.getItem('playlist-tracker-playlists-v2');
+    const savedActiveId = localStorage.getItem('playlist-tracker-active');
     const savedKey = localStorage.getItem('playlist-tracker-apikey');
-    const savedSource = localStorage.getItem('playlist-tracker-source');
-    const savedNotes = localStorage.getItem('playlist-tracker-notes');
     const savedTheme = localStorage.getItem('playlist-tracker-theme');
     const savedOnboarded = localStorage.getItem('playlist-tracker-onboarded');
-    
-    if (savedProgress) setCheckedIds(JSON.parse(savedProgress));
-    let hasSavedVideos = false;
-    if (savedVideos) {
-      const parsedVideos = JSON.parse(savedVideos);
-      if (parsedVideos.length > 0) {
-        hasSavedVideos = true;
-        setVideos(parsedVideos);
-        setCurrentVideo(parsedVideos[0]);
+    const savedStreak = localStorage.getItem('playlist-tracker-streak');
+
+    if (!ENV_API_KEY && savedKey) setApiKey(savedKey);
+    if (savedTheme) setCurrentTheme(savedTheme);
+    if (savedStreak) {
+      try {
+        setStreak(JSON.parse(savedStreak));
+      } catch (_) {
+        setStreak({ current: 0, best: 0, lastDate: null });
       }
     }
-    // Only load manual API key if ENV key is missing
-    if (!ENV_API_KEY && savedKey) setApiKey(savedKey);
-    if (savedSource) setPlaylistSource(savedSource);
-    if (savedNotes) setNotes(JSON.parse(savedNotes));
-    if (savedTheme) setCurrentTheme(savedTheme);
-    if (!savedOnboarded && !hasSavedVideos) setShowOnboarding(true);
-    
-    // Responsive check
+
+    let loadedPlaylists = [];
+
+    console.log('Loading from localStorage, savedPlaylistsRaw:', savedPlaylistsRaw);
+
+    if (savedPlaylistsRaw) {
+      try {
+        loadedPlaylists = JSON.parse(savedPlaylistsRaw);
+        console.log('Loaded playlists:', loadedPlaylists.length);
+        // Ensure all playlists have thumbnail field for backward compatibility
+        loadedPlaylists = loadedPlaylists.map(p => ({
+          ...p,
+          thumbnail: p.thumbnail || null
+        }));
+      } catch (e) {
+        console.error('Failed to parse playlists:', e);
+        loadedPlaylists = [];
+      }
+    } else {
+      console.log('No savedPlaylistsRaw found');
+      // Migration path from the original single-playlist storage
+      const savedVideos = localStorage.getItem('playlist-tracker-videos');
+      const savedProgress = localStorage.getItem('playlist-tracker-progress');
+      const savedNotes = localStorage.getItem('playlist-tracker-notes');
+      const savedSource = localStorage.getItem('playlist-tracker-source');
+
+      if (savedVideos) {
+        const migrated = buildPlaylistShell('Imported Playlist', savedSource || DEFAULT_PLAYLIST_URL);
+        try {
+          migrated.videos = JSON.parse(savedVideos) || [];
+          migrated.checkedIds = savedProgress ? JSON.parse(savedProgress) : [];
+          migrated.notes = savedNotes ? JSON.parse(savedNotes) : {};
+          loadedPlaylists = [migrated];
+        } catch (_) {
+          loadedPlaylists = [];
+        }
+      }
+    }
+
+    hadStoredPlaylists.current = (loadedPlaylists || []).length > 0;
+    setPlaylists(loadedPlaylists);
+    const startId = savedActiveId && loadedPlaylists.some(p => p.id === savedActiveId)
+      ? savedActiveId
+      : loadedPlaylists[0]?.id || null;
+    setActivePlaylistId(startId);
+    hasHydrated.current = true;
+
+    // Always start on dashboard view
+    setView('dashboard');
+
+    // Show onboarding only if never acknowledged
+    if (savedOnboarded !== '1') setShowOnboarding(true);
+
     const checkMobile = () => {
       const mobile = window.innerWidth < 1024;
       setIsMobile(mobile);
@@ -227,18 +353,15 @@ const App = () => {
     checkMobile();
     window.addEventListener('resize', checkMobile);
 
-    // Load YouTube IFrame API (only once on mount)
     if (!window.YT) {
       const tag = document.createElement('script');
       tag.src = "https://www.youtube.com/iframe_api";
-      const loadPlayer = () => {
-        // This will be called when YT API is ready
-        if (window.YT && window.YT.Player) {
-          // Player will be initialized by the other useEffect when currentVideo is set
-        }
+      window.onYouTubeIframeAPIReady = () => {
+        setIsYTReady(true);
       };
-      window.onYouTubeIframeAPIReady = loadPlayer;
       document.body.appendChild(tag);
+    } else if (window.YT && window.YT.Player) {
+      setIsYTReady(true);
     }
 
     return () => window.removeEventListener('resize', checkMobile);
@@ -246,51 +369,126 @@ const App = () => {
   }, []); // Only run once on mount
 
   // Persistence Effects
-  useEffect(() => localStorage.setItem('playlist-tracker-progress', JSON.stringify(checkedIds)), [checkedIds]);
-  useEffect(() => localStorage.setItem('playlist-tracker-videos', JSON.stringify(videos)), [videos]);
+  useEffect(() => {
+    if (!activePlaylistId) return;
+    const selected = playlists.find(p => p.id === activePlaylistId);
+    if (!selected) return;
+    
+    // Keep existing player instance; simply swap React state to the new playlist
+    isLoadingPlaylistData.current = true;
+    setVideos(selected.videos || []);
+    setCheckedIds(selected.checkedIds || []);
+    setNotes(selected.notes || {});
+    setPlaylistSource(selected.source || DEFAULT_PLAYLIST_URL);
+    const nextVideo = (selected.videos || []).find(v => v.id === selected.currentVideoId) || (selected.videos || [])[0] || null;
+    setCurrentVideo(nextVideo);
+    
+    setTimeout(() => {
+      isLoadingPlaylistData.current = false;
+      hasLoadedInitialPlaylist.current = true;
+    }, 0);
+  }, [activePlaylistId, playlists]);
+
+  useEffect(() => {
+    // When leaving the playlist view, tear down the player because the DOM node is unmounted
+    if (view !== 'playlist' && playerRef.current && playerRef.current.destroy) {
+      playerRef.current.destroy();
+      playerRef.current = null;
+    }
+  }, [view]);
+
+  useEffect(() => {
+    if (!activePlaylistId || isLoadingPlaylistData.current || !hasLoadedInitialPlaylist.current) return;
+    setPlaylists(prev => prev.map(p => p.id === activePlaylistId ? {
+      ...p,
+      videos,
+      checkedIds,
+      notes,
+      source: playlistSource,
+      currentVideoId: currentVideo?.id || null,
+      updatedAt: Date.now()
+    } : p));
+  }, [activePlaylistId, videos, checkedIds, notes, playlistSource, currentVideo]);
+
+  useEffect(() => {
+    if (!hasHydrated.current) return;
+    
+    // Only save if: (1) we have playlists, OR (2) playlists went from non-empty to empty (delete action)
+    const wasDeleteAction = prevPlaylistsLength.current > 0 && playlists.length === 0;
+    
+    if (playlists.length > 0 || wasDeleteAction) {
+      try {
+        localStorage.setItem('playlist-tracker-playlists-v2', JSON.stringify(playlists));
+        if (activePlaylistId) localStorage.setItem('playlist-tracker-active', activePlaylistId);
+        console.log('Saved playlists to localStorage:', playlists.length);
+      } catch (err) {
+        console.error('Failed to save to localStorage:', err);
+      }
+    }
+    
+    prevPlaylistsLength.current = playlists.length;
+  }, [playlists, activePlaylistId]);
+
   useEffect(() => localStorage.setItem('playlist-tracker-apikey', apiKey), [apiKey]);
-  useEffect(() => localStorage.setItem('playlist-tracker-source', playlistSource), [playlistSource]);
-  useEffect(() => localStorage.setItem('playlist-tracker-notes', JSON.stringify(notes)), [notes]);
   useEffect(() => localStorage.setItem('playlist-tracker-theme', currentTheme), [currentTheme]);
+  useEffect(() => localStorage.setItem('playlist-tracker-streak', JSON.stringify(streak)), [streak]);
   useEffect(() => {
     updateThemeColors(THEMES[currentTheme]);
   }, [currentTheme]);
 
   // Sync Player with React State
   useEffect(() => {
-    if (currentVideo && window.YT && window.YT.Player && !playerRef.current) {
-      initializePlayer();
+    if (!currentVideo) {
+      // Clean up player if no video selected
+      if (playerRef.current && playerRef.current.destroy) {
+        playerRef.current.destroy();
+        playerRef.current = null;
+      }
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentVideo]); // Only re-initialize when currentVideo changes
 
-  useEffect(() => {
-    if (!currentVideo) return;
-    if (playerRef.current && playerRef.current.loadVideoById) {
+    // Only proceed if YouTube API is ready
+    if (!isYTReady) return;
+
+    // Initialize player if it doesn't exist
+    if (!playerRef.current) {
+      // Small delay to ensure DOM element exists
+      setTimeout(() => {
+        if (window.YT && window.YT.Player && !playerRef.current) {
+          initializePlayer();
+        }
+      }, 100);
+    }
+    // Load video if player already exists
+    else if (playerRef.current && playerRef.current.loadVideoById) {
       playerRef.current.loadVideoById(currentVideo.id);
     }
-  }, [currentVideo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentVideo, isYTReady]);
+
+  useEffect(() => {
+    // When returning to playlist view, ensure the player is recreated and loaded
+    if (view !== 'playlist') return;
+    if (!currentVideo || !isYTReady) return;
+
+    if (!playerRef.current) {
+      setTimeout(() => {
+        if (view === 'playlist' && currentVideo && isYTReady && window.YT && window.YT.Player && !playerRef.current) {
+          initializePlayer();
+        }
+      }, 50);
+    } else if (playerRef.current.loadVideoById) {
+      playerRef.current.loadVideoById(currentVideo.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, currentVideo, isYTReady]);
+
+  // Tear down player when leaving the playlist view to avoid broken instances when the DOM node is unmounted
+  // (Keep player alive across view switches; cleanup only when no current video)
 
   // --- Stats Calculation ---
 
-  const stats = useMemo(() => {
-    let totalSec = 0;
-    let completedSec = 0;
-
-    videos.forEach(v => {
-      const sec = parseDurationToSeconds(v.duration);
-      totalSec += sec;
-      if (checkedIds.includes(v.id)) {
-        completedSec += sec;
-      }
-    });
-
-    return {
-      total: formatSecondsToTime(totalSec),
-      completed: formatSecondsToTime(completedSec),
-      percentage: totalSec > 0 ? Math.round((completedSec / totalSec) * 100) : 0
-    };
-  }, [videos, checkedIds]);
+  const stats = useMemo(() => computeStats(videos, checkedIds), [videos, checkedIds]);
 
 
   // --- Import Handlers ---
@@ -307,24 +505,60 @@ const App = () => {
     return (match && match[2].length === 11) ? match[2] : null;
   };
 
-  const handleImportPlaylist = async () => {
-    const playlistId = extractPlaylistId(playlistSource);
+  // --- Create & Import Handler (Dashboard Only) ---
+  // This function creates a playlist and immediately imports videos from YouTube
+  const handleCreateAndImportPlaylist = async (e) => {
+    e.preventDefault();
+    
+    // STEP 1: Validate inputs
+    const name = newPlaylistName.trim() || `Playlist ${playlists.length + 1}`;
+    const source = newPlaylistUrl.trim();
 
+    if (!source) {
+      alert('Please enter a YouTube playlist URL.');
+      return;
+    }
+
+    const playlistId = extractPlaylistId(source);
     if (!playlistId) {
-      alert("Invalid Playlist URL. Must contain 'list=...'");
+      alert('Invalid Playlist URL. Must contain \'list=...\'');
       return;
     }
+    
     if (!apiKey) {
-      alert("API Key missing. Please set REACT_APP_YOUTUBE_API_KEY in env or enter manually.");
+      alert('API Key missing. Please set REACT_APP_YOUTUBE_API_KEY in env or enter manually.');
       return;
     }
 
+    // STEP 2: Create empty playlist shell
+    const shell = buildPlaylistShell(name, source);
+    setPlaylists(prev => [...prev, shell]);
+    setNewPlaylistName('');
+    setNewPlaylistUrl('');
+
+    // STEP 3: Fetch and import videos from YouTube API
     setIsLoading(true);
     try {
-      // 1. Fetch ALL Playlist Items (handle pagination)
+      // 3a. Try to fetch playlist title and thumbnail from YouTube (only if user didn't provide custom name)
+      let resolvedTitle = name;
+      let thumbnailUrl = null;
+      try {
+        const infoResponse = await fetch(`https://www.googleapis.com/youtube/v3/playlists?part=snippet&id=${playlistId}&key=${apiKey}`);
+        const infoData = await infoResponse.json();
+        const fetchedTitle = infoData?.items?.[0]?.snippet?.title;
+        const thumbnails = infoData?.items?.[0]?.snippet?.thumbnails;
+        if (fetchedTitle && isDefaultPlaylistName(name)) {
+          resolvedTitle = fetchedTitle;
+        }
+        // Get highest quality thumbnail available
+        thumbnailUrl = thumbnails?.maxres?.url || thumbnails?.high?.url || thumbnails?.medium?.url || thumbnails?.default?.url || null;
+      } catch (_) {
+        // Keep user-provided name if API fails
+      }
+
+      // 3b. Fetch all playlist items (handles pagination for large playlists)
       let allItems = [];
       let nextPageToken = null;
-      
       do {
         const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${playlistId}&key=${apiKey}${nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
         const plResponse = await fetch(url);
@@ -336,16 +570,14 @@ const App = () => {
         nextPageToken = plData.nextPageToken;
       } while (nextPageToken);
 
-      if (allItems.length === 0) throw new Error("No videos found.");
+      if (allItems.length === 0) throw new Error('No videos found in this playlist.');
 
-      // 2. Fetch Video Details (for Duration) - in batches of 50
+      // 3c. Fetch video durations (batch requests, 50 at a time)
       const durationMap = {};
       for (let i = 0; i < allItems.length; i += 50) {
         const batch = allItems.slice(i, i + 50);
         const videoIds = batch.map(item => item.snippet.resourceId.videoId).join(',');
-        const vidResponse = await fetch(
-          `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoIds}&key=${apiKey}`
-        );
+        const vidResponse = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoIds}&key=${apiKey}`);
         const vidData = await vidResponse.json();
         
         if (vidData.items) {
@@ -355,39 +587,82 @@ const App = () => {
         }
       }
 
-      // 3. Merge Data
+      // 3d. Build final video list with titles and durations
       const newVideos = allItems.map(item => {
         const vidId = item.snippet.resourceId.videoId;
         const isoDuration = durationMap[vidId];
-        return {
-          id: vidId,
-          title: item.snippet.title,
+        return { 
+          id: vidId, 
+          title: item.snippet.title, 
           duration: isoDuration || '??:??' 
         };
       });
 
-      // Destroy old player if it exists
+      // STEP 4: Clean up old player if it exists
       if (playerRef.current && playerRef.current.destroy) {
         playerRef.current.destroy();
         playerRef.current = null;
       }
 
-      // Batch state updates to prevent stale UI
+      // STEP 5: Update playlist with imported videos
+      setPlaylists(prev => prev.map(p => p.id === shell.id ? {
+        ...p,
+        videos: newVideos,
+        name: resolvedTitle,
+        thumbnail: thumbnailUrl,
+        currentVideoId: newVideos[0]?.id || null,
+        checkedIds: [],
+        notes: {},
+        updatedAt: Date.now()
+      } : p));
+      
+      // STEP 6: Activate playlist and switch view AFTER import completes
+      setActivePlaylistId(shell.id);
+      setVideos(newVideos);
+      setCurrentVideo(newVideos[0] || null);
       setCheckedIds([]);
       setNotes({});
-      setVideos(newVideos);
-      setCurrentVideo(newVideos.length > 0 ? newVideos[0] : null);
-      setIsEditMode(false);
-      setShowOnboarding(false);
-      localStorage.setItem('playlist-tracker-onboarded', '1');
+      setView('playlist');
+      setIsSidebarOpen(true);
       
-      alert(`Imported ${newVideos.length} videos with duration data!`);
-
+      localStorage.setItem('playlist-tracker-onboarded', '1');
+      alert(`✓ Successfully imported ${newVideos.length} video${newVideos.length === 1 ? '' : 's'}!`);
+      
     } catch (error) {
-      alert(`Error: ${error.message}`);
+      // If import fails, remove the empty playlist shell
+      alert(`Import failed: ${error.message}`);
+      setPlaylists(prev => prev.filter(p => p.id !== shell.id));
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleOpenPlaylist = (id, openImport = false) => {
+    setActivePlaylistId(id);
+    setView('playlist');
+    setIsSidebarOpen(openImport ? true : !isMobile);
+    if (openImport) setIsEditMode(true);
+  };
+
+  const handleDeletePlaylist = (id) => {
+    if (!window.confirm('Delete this playlist? This will remove its local progress and notes.')) return;
+    setPlaylists(prev => {
+      const remaining = prev.filter(p => p.id !== id);
+      if (!remaining.length) {
+        setActivePlaylistId(null);
+        setShowOnboarding(true);
+        setView('dashboard');
+        return [];
+      }
+
+      if (activePlaylistId === id) {
+        setActivePlaylistId(remaining[0].id);
+        setShowOnboarding(!remaining[0].videos.length);
+        setView(remaining[0].videos.length ? 'playlist' : 'dashboard');
+      }
+
+      return remaining;
+    });
   };
 
   const handleAddManualVideo = (e) => {
@@ -413,18 +688,13 @@ const App = () => {
     });
   };
 
-  const dismissOnboarding = (openImport = false) => {
-    setShowOnboarding(false);
-    localStorage.setItem('playlist-tracker-onboarded', '1');
-    if (openImport) {
-      setIsEditMode(true);
-      setIsSidebarOpen(true);
-    }
-  };
-
   const toggleCheck = (e, id) => {
     e.stopPropagation(); 
-    setCheckedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+    setCheckedIds(prev => {
+      if (prev.includes(id)) return prev.filter(i => i !== id);
+      updateStreakOnCompletion();
+      return [...prev, id];
+    });
   };
 
   const playVideo = (video) => {
@@ -437,6 +707,298 @@ const App = () => {
     e.stopPropagation();
     window.open(`https://www.youtube.com/watch?v=${id}`, '_blank');
   };
+
+  if (view === 'dashboard' || !activePlaylist) {
+    return (
+      <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-cyan-500/30">
+        <nav className="h-16 border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-md fixed top-0 w-full z-50 flex items-center justify-between px-4 lg:px-8">
+          <div className="flex items-center gap-3">
+            <div className="flex flex-col items-start" style={{ color: 'var(--theme-text)' }}>
+              <div className="flex items-center gap-2">
+                <Layers className="w-6 h-6" />
+                <span className="font-bold text-lg tracking-tight text-white">Playlist<span style={{ color: 'var(--theme-text)' }}>Track</span></span>
+              </div>
+              <span className="text-[10px] text-neutral-500 font-medium tracking-wide italic">Let's get shit done</span>
+            </div>
+            
+            <div className="w-px h-6 bg-neutral-800 hidden md:block ml-2"></div>
+            
+            {/* GitHub & Coffee Links */}
+            <a
+              href={GITHUB_REPO_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="hidden md:flex p-2 text-neutral-500 hover:text-white hover:bg-neutral-800 rounded-lg transition-colors"
+              title="View on GitHub"
+            >
+              <Github size={18} />
+            </a>
+            <a
+              href="https://www.buymeacoffee.com/Siddhantcookie"
+              target="_blank"
+              rel="noreferrer"
+              className="hidden md:flex p-2 text-neutral-500 hover:text-yellow-400 hover:bg-neutral-800 rounded-lg transition-colors"
+              title="Buy me a coffee"
+            >
+              <Coffee size={18} />
+            </a>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex flex-col items-end text-xs text-neutral-400">
+              <span className="uppercase tracking-wide text-[10px]">Playlists</span>
+              <span className="text-white font-semibold">{playlists.length}</span>
+            </div>
+
+            <div className="w-px h-6 bg-neutral-800" />
+
+            <div className="flex items-center gap-1 text-sm font-bold" style={{ color: streak.current ? '#f97316' : '#9ca3af' }} title={`Best streak: ${streak.best} day${streak.best === 1 ? '' : 's'}`}>
+              <Flame size={16} />
+              <span>{streak.current}d</span>
+            </div>
+
+            <div className="w-px h-6 bg-neutral-800 hidden sm:block" />
+
+            <button
+              onClick={() => setShowThemeMenu(!showThemeMenu)}
+              className="p-2 hover:bg-neutral-800 rounded-lg transition-colors"
+              style={{ color: 'var(--theme-text)' }}
+              title="Change theme"
+            >
+              <Palette size={20} />
+            </button>
+            {showThemeMenu && (
+              <div className="absolute top-14 right-4 bg-neutral-900 border border-neutral-800 rounded-lg shadow-xl p-2 min-w-[140px] z-50">
+                {Object.entries(THEMES).map(([key, t]) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setCurrentTheme(key);
+                      setShowThemeMenu(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-left"
+                    style={{
+                      backgroundColor: currentTheme === key ? t.bg : 'transparent',
+                      color: currentTheme === key ? t.text : '#a3a3a3'
+                    }}
+                  >
+                    <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: t.text }}></div>
+                    <span className="text-sm font-medium">{t.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </nav>
+
+        {showOnboarding && (
+          <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center px-4">
+            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 w-full max-w-md space-y-4 shadow-2xl">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-neutral-800 flex items-center justify-center" style={{ color: 'var(--theme-text)' }}>
+                  <Layers size={20} />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-white">Welcome to PlaylistTrack</h2>
+                  <p className="text-sm text-neutral-400">Start tracking your learning progress in 3 easy steps</p>
+                </div>
+              </div>
+
+              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3 text-sm text-neutral-300">
+                <div className="flex items-start gap-3">
+                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-xs font-bold">1</span>
+                  <div>
+                    <p className="font-semibold text-white">Enter a playlist name</p>
+                    <p className="text-xs text-neutral-400 mt-0.5">Give your course a memorable name</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-xs font-bold">2</span>
+                  <div>
+                    <p className="font-semibold text-white">Paste YouTube playlist URL</p>
+                    <p className="text-xs text-neutral-400 mt-0.5">Copy the link from any YouTube playlist</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center text-xs font-bold">3</span>
+                  <div>
+                    <p className="font-semibold text-white">Click "Create & Import"</p>
+                    <p className="text-xs text-neutral-400 mt-0.5">Your videos will load automatically and you can start learning!</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-3 text-xs text-cyan-200">
+                <p className="font-semibold flex items-center gap-1.5">
+                  <Layers size={12} />
+                  Multi-Playlist Support
+                </p>
+                <p className="text-cyan-300/70 mt-1">Add as many playlists as you want! Each one tracks progress independently.</p>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  onClick={() => {
+                    setShowOnboarding(false);
+                    localStorage.setItem('playlist-tracker-onboarded', '1');
+                  }}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold text-white"
+                  style={{ backgroundColor: THEMES[currentTheme].primary }}
+                >
+                  Got it!
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <main className="pt-20 pb-16 px-4 lg:px-8 max-w-6xl mx-auto space-y-8">
+          <header className="flex flex-col gap-2">
+            <h1 className="text-3xl font-black text-white tracking-tight">Your playlists</h1>
+            <p className="text-neutral-400 text-sm max-w-2xl">Create as many learning playlists as you like, track progress per course, and jump back in when you are ready.</p>
+          </header>
+
+          <section className="bg-neutral-900 border border-neutral-800 rounded-2xl p-4 lg:p-6 shadow-lg shadow-cyan-900/10">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h2 className="text-lg font-bold text-white">Add playlist</h2>
+                <p className="text-xs text-neutral-500">Give it a name, paste the playlist link, and import from the next screen.</p>
+              </div>
+            </div>
+            <form onSubmit={handleCreateAndImportPlaylist} className="mt-4 grid grid-cols-1 md:grid-cols-[1.2fr_1.8fr_auto] gap-3">
+              <input
+                type="text"
+                placeholder="Playlist name"
+                value={newPlaylistName}
+                onChange={(e) => setNewPlaylistName(e.target.value)}
+                className="bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500"
+              />
+              <input
+                type="text"
+                placeholder="YouTube playlist URL (optional)"
+                value={newPlaylistUrl}
+                onChange={(e) => setNewPlaylistUrl(e.target.value)}
+                className="bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500"
+              />
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isLoading ? <Loader2 size={16} className="animate-spin" /> : 'Create & Import'}
+              </button>
+            </form>
+          </section>
+
+          <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {playlists.map((pl) => {
+              const plStats = computeStats(pl.videos, pl.checkedIds);
+              return (
+                <div key={pl.id} className="bg-neutral-900/80 border border-neutral-800 rounded-2xl overflow-hidden flex flex-col hover:border-neutral-700 transition-colors">
+                  {/* Thumbnail */}
+                  {pl.thumbnail && (
+                    <div className="aspect-video w-full bg-neutral-950 overflow-hidden">
+                      <img 
+                        src={pl.thumbnail} 
+                        alt={pl.name}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  )}
+                  
+                  <div className="p-4 flex flex-col gap-3 flex-1">
+                    {/* Title Section */}
+                    <div className="space-y-1">
+                      <p className="text-[11px] uppercase tracking-wide text-neutral-500">Course</p>
+                      <h3 className="text-lg font-bold text-white leading-tight">{pl.name}</h3>
+                    </div>
+
+                    {/* Stats */}
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3 text-xs text-neutral-400">
+                        <ListVideo size={14} className="text-neutral-500" />
+                        <span>{pl.videos.length} video{pl.videos.length === 1 ? '' : 's'}</span>
+                        <span className="w-1 h-1 rounded-full bg-neutral-700" />
+                        <span>{plStats.total}</span>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-xs text-neutral-400">
+                          <span>Progress</span>
+                          <span className="text-white font-semibold">{plStats.percentage}%</span>
+                        </div>
+                        <div className="h-2 bg-neutral-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{ width: `${plStats.percentage}%`, background: THEMES[currentTheme].primary }}
+                          ></div>
+                        </div>
+                        <div className="text-[11px] text-neutral-500">{plStats.completed} / {plStats.total}</div>
+                      </div>
+                    </div>
+
+                    {/* Buttons */}
+                    <div className="flex gap-2 mt-auto pt-2 border-t border-neutral-800">
+                      <button
+                        onClick={() => handleOpenPlaylist(pl.id)}
+                        className="flex-1 bg-neutral-800 hover:bg-neutral-700 text-white px-3 py-2 rounded-lg text-sm font-semibold transition-colors"
+                      >
+                        {pl.videos.length ? 'Continue' : 'Open'}
+                      </button>
+                      <button
+                        onClick={() => handleOpenPlaylist(pl.id, true)}
+                        className="px-3 py-2 text-sm rounded-lg border border-neutral-700 text-neutral-200 hover:border-cyan-500 transition-colors"
+                      >
+                        Import
+                      </button>
+                      <button
+                        onClick={() => handleDeletePlaylist(pl.id)}
+                        className="p-2 text-neutral-500 hover:text-red-400 rounded-lg hover:bg-neutral-800 transition-colors"
+                        title="Delete playlist"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {!playlists.length && (
+              <div className="border border-dashed border-neutral-800 rounded-2xl p-6 text-center text-neutral-500">
+                No playlists yet. Create one to get started.
+              </div>
+            )}
+          </section>
+
+          {/* Footer */}
+          <footer className="mt-8 text-center text-[11px] text-neutral-500 flex flex-col items-center gap-3">
+            <div>
+              <span>Made with ❤️ by </span>
+              <a
+                href="https://github.com/siddhantcookie"
+                target="_blank"
+                rel="noreferrer"
+                className="text-neutral-300 hover:text-white underline decoration-dotted underline-offset-4"
+              >
+                siddhantcookie
+              </a>
+            </div>
+            <a
+              href="https://www.buymeacoffee.com/Siddhantcookie"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-neutral-400 hover:text-yellow-400 transition-colors"
+              title="Buy me a coffee"
+            >
+              <Coffee size={16} />
+              <span className="text-[11px]">Buy me a coffee</span>
+            </a>
+          </footer>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-cyan-500/30">
@@ -457,8 +1019,63 @@ const App = () => {
             </div>
             <span className="text-[10px] text-neutral-500 font-medium tracking-wide italic">Let's get shit done</span>
           </div>
+          
+          <div className="w-px h-6 bg-neutral-800 hidden md:block ml-2"></div>
+          
+          {/* GitHub & Coffee Links */}
+          <a
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="hidden md:flex p-2 text-neutral-500 hover:text-white hover:bg-neutral-800 rounded-lg transition-colors"
+            title="View on GitHub"
+          >
+            <Github size={18} />
+          </a>
+          <a
+            href="https://www.buymeacoffee.com/Siddhantcookie"
+            target="_blank"
+            rel="noreferrer"
+            className="hidden md:flex p-2 text-neutral-500 hover:text-yellow-400 hover:bg-neutral-800 rounded-lg transition-colors"
+            title="Buy me a coffee"
+          >
+            <Coffee size={18} />
+          </a>
         </div>
-        <div className="flex items-center gap-4">
+
+        {/* Center Stats */}
+        <div className="hidden lg:flex items-center gap-4">
+          <div className="text-sm font-semibold text-neutral-300 max-w-xs truncate">
+            {activePlaylist?.name}
+          </div>
+          
+          <div className="w-px h-6 bg-neutral-800"></div>
+          
+          <div className="flex items-center gap-1 text-sm font-bold" style={{ color: streak.current ? '#f97316' : '#9ca3af' }} title={`Best streak: ${streak.best} day${streak.best === 1 ? '' : 's'}`}>
+            <Flame size={16} />
+            <span>{streak.current}d</span>
+          </div>
+          
+          <div className="w-px h-6 bg-neutral-800"></div>
+          
+          <div className="text-xs font-mono text-neutral-300">
+            {stats.completed} <span className="text-neutral-600">/</span> {stats.total}
+          </div>
+          
+          <div className="w-px h-6 bg-neutral-800"></div>
+          
+          <div style={{ color: 'var(--theme-text)' }} className="text-sm font-bold">{stats.percentage}%</div>
+        </div>
+
+        {/* Right Actions */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => { setView('dashboard'); setIsSidebarOpen(false); setIsEditMode(false); }}
+            className="hidden md:flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg bg-neutral-900 border border-neutral-800 hover:border-neutral-700 text-neutral-200"
+          >
+            <ArrowLeft size={14} /> Dashboard
+          </button>
+
           {/* Theme Selector */}
           <div className="relative">
             <button
@@ -491,52 +1108,6 @@ const App = () => {
               </div>
             )}
           </div>
-
-          <div className="w-px h-6 bg-neutral-800 hidden sm:block"></div>
-           {/* Source Link */}
-           <a 
-            href={playlistSource}
-            target="_blank"
-            rel="noreferrer"
-            className="hidden sm:flex items-center gap-2 text-xs font-medium text-neutral-500 hover:text-white transition-colors"
-          >
-            <Youtube size={16} />
-            <span>Source</span>
-          </a>
-          {/* GitHub Link */}
-          <a
-            href={GITHUB_REPO_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="p-2 text-neutral-500 hover:text-white hover:bg-neutral-800 rounded-lg transition-colors"
-            title="View on GitHub"
-          >
-            <Github size={18} />
-          </a>
-          {/* Buy Me a Coffee Link */}
-          <a
-            href="https://www.buymeacoffee.com/Siddhantcookie"
-            target="_blank"
-            rel="noreferrer"
-            className="p-2 text-neutral-500 hover:text-yellow-400 hover:bg-neutral-800 rounded-lg transition-colors"
-            title="Buy me a coffee"
-          >
-            <Coffee size={18} />
-          </a>
-          <div className="w-px h-6 bg-neutral-800 hidden sm:block"></div>
-          
-          {/* Time Stats */}
-          <div className="hidden md:flex flex-col items-end">
-            <span className="text-[10px] text-neutral-500 uppercase tracking-wider font-bold">Time</span>
-            <div className="text-xs font-mono text-neutral-300">
-              {stats.completed} <span className="text-neutral-600">/</span> {stats.total}
-            </div>
-          </div>
-
-          <div className="flex flex-col items-end">
-            <span className="text-[10px] text-neutral-500 uppercase tracking-wider font-bold">Progress</span>
-            <div style={{ color: 'var(--theme-text)' }} className="text-sm font-bold">{stats.percentage}%</div>
-          </div>
           
           {/* Circular Progress */}
           <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center relative overflow-hidden ring-2 ring-neutral-800">
@@ -548,53 +1119,6 @@ const App = () => {
           </div>
         </div>
       </nav>
-
-      {showOnboarding && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center px-4">
-          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 w-full max-w-md space-y-4 shadow-2xl">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-neutral-800 flex items-center justify-center" style={{ color: 'var(--theme-text)' }}>
-                <LinkIcon size={20} />
-              </div>
-              <div>
-                <h2 className="text-xl font-bold text-white">Import your playlist</h2>
-                <p className="text-sm text-neutral-400">Paste your YouTube playlist link in the Import panel to start tracking your progress.</p>
-              </div>
-            </div>
-
-            <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-2 text-sm text-neutral-300">
-              <div className="flex items-start gap-2">
-                <span className="text-neutral-500">1.</span>
-                <span>Open the Import panel (Import button on the right).</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span className="text-neutral-500">2.</span>
-                <span>Paste your YouTube playlist URL and click Fetch.</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <span className="text-neutral-500">3.</span>
-                <span>Mark videos as complete and take notes as you go.</span>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => dismissOnboarding(false)}
-                className="px-3 py-2 text-sm text-neutral-400 hover:text-white"
-              >
-                Maybe later
-              </button>
-              <button
-                onClick={() => dismissOnboarding(true)}
-                className="px-4 py-2 rounded-lg text-sm font-semibold text-white"
-                style={{ backgroundColor: THEMES[currentTheme].primary }}
-              >
-                Open Import
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Main Layout */}
       <div className="pt-16 flex h-screen overflow-hidden">
@@ -738,32 +1262,6 @@ const App = () => {
             {isEditMode && (
               <div className="animate-in fade-in slide-in-from-top-2 duration-200 space-y-4 bg-neutral-900/50 p-3 rounded-xl border border-neutral-800">
                 
-                {/* Import Section */}
-                <div className="space-y-2 border-b border-neutral-800 pb-4">
-                  <h3 className="text-xs font-bold uppercase tracking-wide flex items-center gap-2" style={{ color: 'var(--theme-text)' }}>
-                    <LinkIcon size={12} /> Playlist Link
-                  </h3>
-                  
-                  <input
-                    type="text"
-                    placeholder="Paste YouTube Playlist URL..."
-                    value={playlistSource}
-                    onChange={(e) => setPlaylistSource(e.target.value)}
-                    className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none placeholder:text-neutral-600 mb-2 transition-colors"
-                    onFocus={(e) => e.target.style.borderColor = THEMES[currentTheme].primary}
-                    onBlur={(e) => e.target.style.borderColor = ''}
-                  />
-                  
-                  <button 
-                    onClick={handleImportPlaylist}
-                    disabled={isLoading}
-                    className="w-full bg-neutral-800 hover:bg-neutral-700 text-white py-2 rounded-lg transition-colors disabled:opacity-50 text-xs font-bold flex items-center justify-center gap-2"
-                  >
-                    {isLoading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                    {ENV_API_KEY ? "Fetch Videos (Using Env Key)" : "Fetch Videos"}
-                  </button>
-                </div>
-
                 {/* Manual Add */}
                 <div className="space-y-2">
                    <h3 className="text-xs font-bold text-neutral-400 uppercase tracking-wide flex items-center gap-2">
