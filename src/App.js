@@ -250,9 +250,20 @@ const App = () => {
       const videoData = event.target.getVideoData();
       if (videoData && videoData.video_id) {
          handleVideoComplete(videoData.video_id);
+         
+         // Autoplay next video
+         setCurrentVideo(prev => {
+           if (!prev) return null;
+           const currentIndex = videos.findIndex(v => v.id === prev.id);
+           if (currentIndex !== -1 && currentIndex < videos.length - 1) {
+             // Switch to next video automatically
+             return videos[currentIndex + 1];
+           }
+           return prev;
+         });
       }
     }
-  }, [handleVideoComplete]);
+  }, [handleVideoComplete, videos]);
 
   const initializePlayer = useCallback(() => {
     if (!currentVideo) return;
@@ -713,13 +724,13 @@ const App = () => {
       <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-cyan-500/30">
         <nav className="h-16 border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-md fixed top-0 w-full z-50 flex items-center justify-between px-4 lg:px-8">
           <div className="flex items-center gap-3">
-            <div className="flex flex-col items-start" style={{ color: 'var(--theme-text)' }}>
+            <button onClick={() => { setView('dashboard'); setIsSidebarOpen(false); setIsEditMode(false); }} className="flex flex-col items-start hover:opacity-80 transition-opacity" style={{ color: 'var(--theme-text)' }}>
               <div className="flex items-center gap-2">
                 <Layers className="w-6 h-6" />
                 <span className="font-bold text-lg tracking-tight text-white">Playlist<span style={{ color: 'var(--theme-text)' }}>Track</span></span>
               </div>
               <span className="text-[10px] text-neutral-500 font-medium tracking-wide italic">Let's get shit done</span>
-            </div>
+            </button>
             
             <div className="w-px h-6 bg-neutral-800 hidden md:block ml-2"></div>
             
@@ -1012,13 +1023,13 @@ const App = () => {
           >
             {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
-          <div className="flex flex-col items-start" style={{ color: 'var(--theme-text)' }}>
+          <button onClick={() => { setView('dashboard'); setIsSidebarOpen(false); setIsEditMode(false); }} className="flex flex-col items-start hover:opacity-80 transition-opacity" style={{ color: 'var(--theme-text)' }}>
             <div className="flex items-center gap-2">
               <ListVideo className="w-6 h-6" />
               <span className="font-bold text-lg tracking-tight text-white">Playlist<span style={{ color: 'var(--theme-text)' }}>Track</span></span>
             </div>
             <span className="text-[10px] text-neutral-500 font-medium tracking-wide italic">Let's get shit done</span>
-          </div>
+          </button>
           
           <div className="w-px h-6 bg-neutral-800 hidden md:block ml-2"></div>
           
