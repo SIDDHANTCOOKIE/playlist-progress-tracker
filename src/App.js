@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { 
-  ExternalLink, 
-  CheckCircle2, 
-  Circle, 
-  MoreVertical, 
+import {
+  ExternalLink,
+  CheckCircle2,
+  Circle,
+  MoreVertical,
   ListVideo,
   Trophy,
   Menu,
@@ -21,7 +21,8 @@ import {
   Coffee,
   Flame,
   ArrowLeft,
-  Layers
+  Layers,
+  RefreshCw
 } from 'lucide-react';
 
 // --- Environment Variable for API Key ---
@@ -49,7 +50,7 @@ const parseDurationToSeconds = (durationStr) => {
     if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
     if (parts.length === 2) return parts[0] * 60 + parts[1];
   }
-  
+
   return 0;
 };
 
@@ -83,7 +84,7 @@ const computeStats = (videos = [], checkedIds = []) => {
 
 const downloadNotesAsText = (notes, videos, currentVideo) => {
   const currentNote = notes[currentVideo.id];
-  
+
   if (!currentNote || !currentNote.trim()) {
     alert('No notes for this video to download');
     return;
@@ -178,7 +179,7 @@ const App = () => {
   const [checkedIds, setCheckedIds] = useState([]);
   const [currentVideo, setCurrentVideo] = useState(null);
   const [notes, setNotes] = useState({}); // { videoId: "note content" }
-  
+
   // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
@@ -191,7 +192,7 @@ const App = () => {
   });
 
   const activePlaylist = useMemo(() => playlists.find(p => p.id === activePlaylistId) || null, [playlists, activePlaylistId]);
-  
+
   // Import/Settings State
   const [playlistSource, setPlaylistSource] = useState(DEFAULT_PLAYLIST_URL);
   const [apiKey, setApiKey] = useState(ENV_API_KEY);
@@ -249,21 +250,41 @@ const App = () => {
     if (event.data === 0) {
       const videoData = event.target.getVideoData();
       if (videoData && videoData.video_id) {
-         handleVideoComplete(videoData.video_id);
-         
-         // Autoplay next video
-         setCurrentVideo(prev => {
-           if (!prev) return null;
-           const currentIndex = videos.findIndex(v => v.id === prev.id);
-           if (currentIndex !== -1 && currentIndex < videos.length - 1) {
-             // Switch to next video automatically
-             return videos[currentIndex + 1];
-           }
-           return prev;
-         });
+        handleVideoComplete(videoData.video_id);
+
+        // Autoplay next video
+        setCurrentVideo(prev => {
+          if (!prev) return null;
+          const currentIndex = videos.findIndex(v => v.id === prev.id);
+          if (currentIndex !== -1 && currentIndex < videos.length - 1) {
+            // Switch to next video automatically
+            return videos[currentIndex + 1];
+          }
+          return prev;
+        });
       }
     }
   }, [handleVideoComplete, videos]);
+
+  const onPlayerError = useCallback((event) => {
+    // Error codes: 2 = Invalid parameter, 5 = HTML5 player error, 
+    // 100 = Video not found/deleted, 101/150 = Video not embeddable/restricted
+    console.error('YouTube Player Error:', event.data);
+    const errorMessages = {
+      2: 'Invalid video ID. This video may have been removed.',
+      5: 'Video player error. Try refreshing the page.',
+      100: 'This video is no longer available or has been deleted.',
+      101: 'This video cannot be played in embedded players.',
+      150: 'This video cannot be played in embedded players.'
+    };
+
+    const message = errorMessages[event.data] || 'Unable to play this video.';
+
+    // Show error to user
+    if (event.data === 100 || event.data === 101 || event.data === 150) {
+      alert(`⚠️ ${message}\n\nVideo: ${currentVideo?.title}\n\nTip: Click "Open in YouTube" to watch it directly on YouTube.`);
+    }
+  }, [currentVideo]);
 
   const initializePlayer = useCallback(() => {
     if (!currentVideo) return;
@@ -277,11 +298,12 @@ const App = () => {
           'rel': 0
         },
         events: {
-          'onStateChange': onPlayerStateChange
+          'onStateChange': onPlayerStateChange,
+          'onError': onPlayerError
         }
       });
     }
-  }, [currentVideo, onPlayerStateChange]);
+  }, [currentVideo, onPlayerStateChange, onPlayerError]);
 
   // --- Initialization & Storage ---
 
@@ -384,7 +406,7 @@ const App = () => {
     if (!activePlaylistId) return;
     const selected = playlists.find(p => p.id === activePlaylistId);
     if (!selected) return;
-    
+
     // Keep existing player instance; simply swap React state to the new playlist
     isLoadingPlaylistData.current = true;
     setVideos(selected.videos || []);
@@ -393,7 +415,7 @@ const App = () => {
     setPlaylistSource(selected.source || DEFAULT_PLAYLIST_URL);
     const nextVideo = (selected.videos || []).find(v => v.id === selected.currentVideoId) || (selected.videos || [])[0] || null;
     setCurrentVideo(nextVideo);
-    
+
     setTimeout(() => {
       isLoadingPlaylistData.current = false;
       hasLoadedInitialPlaylist.current = true;
@@ -423,10 +445,10 @@ const App = () => {
 
   useEffect(() => {
     if (!hasHydrated.current) return;
-    
+
     // Only save if: (1) we have playlists, OR (2) playlists went from non-empty to empty (delete action)
     const wasDeleteAction = prevPlaylistsLength.current > 0 && playlists.length === 0;
-    
+
     if (playlists.length > 0 || wasDeleteAction) {
       try {
         localStorage.setItem('playlist-tracker-playlists-v2', JSON.stringify(playlists));
@@ -436,7 +458,7 @@ const App = () => {
         console.error('Failed to save to localStorage:', err);
       }
     }
-    
+
     prevPlaylistsLength.current = playlists.length;
   }, [playlists, activePlaylistId]);
 
@@ -472,7 +494,21 @@ const App = () => {
     }
     // Load video if player already exists
     else if (playerRef.current && playerRef.current.loadVideoById) {
-      playerRef.current.loadVideoById(currentVideo.id);
+      try {
+        playerRef.current.loadVideoById(currentVideo.id);
+      } catch (error) {
+        console.error('Error loading video:', error);
+        // If loading fails, destroy and recreate player
+        if (playerRef.current && playerRef.current.destroy) {
+          playerRef.current.destroy();
+          playerRef.current = null;
+          setTimeout(() => {
+            if (window.YT && window.YT.Player && !playerRef.current) {
+              initializePlayer();
+            }
+          }, 100);
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentVideo, isYTReady]);
@@ -482,6 +518,8 @@ const App = () => {
     if (view !== 'playlist') return;
     if (!currentVideo || !isYTReady) return;
 
+    // Force recreation of player when coming back to playlist view
+    // This helps fix stale player issues
     if (!playerRef.current) {
       setTimeout(() => {
         if (view === 'playlist' && currentVideo && isYTReady && window.YT && window.YT.Player && !playerRef.current) {
@@ -489,7 +527,21 @@ const App = () => {
         }
       }, 50);
     } else if (playerRef.current.loadVideoById) {
-      playerRef.current.loadVideoById(currentVideo.id);
+      try {
+        playerRef.current.loadVideoById(currentVideo.id);
+      } catch (error) {
+        console.error('Error reloading video on view switch:', error);
+        // Recreate player if loading fails
+        if (playerRef.current && playerRef.current.destroy) {
+          playerRef.current.destroy();
+          playerRef.current = null;
+          setTimeout(() => {
+            if (view === 'playlist' && window.YT && window.YT.Player && !playerRef.current) {
+              initializePlayer();
+            }
+          }, 50);
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, currentVideo, isYTReady]);
@@ -520,7 +572,7 @@ const App = () => {
   // This function creates a playlist and immediately imports videos from YouTube
   const handleCreateAndImportPlaylist = async (e) => {
     e.preventDefault();
-    
+
     // STEP 1: Validate inputs
     const name = newPlaylistName.trim() || `Playlist ${playlists.length + 1}`;
     const source = newPlaylistUrl.trim();
@@ -535,7 +587,7 @@ const App = () => {
       alert('Invalid Playlist URL. Must contain \'list=...\'');
       return;
     }
-    
+
     if (!apiKey) {
       alert('API Key missing. Please set REACT_APP_YOUTUBE_API_KEY in env or enter manually.');
       return;
@@ -574,9 +626,9 @@ const App = () => {
         const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${playlistId}&key=${apiKey}${nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
         const plResponse = await fetch(url);
         const plData = await plResponse.json();
-        
+
         if (plData.error) throw new Error(plData.error.message);
-        
+
         allItems = allItems.concat(plData.items.filter(i => i.snippet.title !== 'Private video'));
         nextPageToken = plData.nextPageToken;
       } while (nextPageToken);
@@ -590,7 +642,7 @@ const App = () => {
         const videoIds = batch.map(item => item.snippet.resourceId.videoId).join(',');
         const vidResponse = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoIds}&key=${apiKey}`);
         const vidData = await vidResponse.json();
-        
+
         if (vidData.items) {
           vidData.items.forEach(v => {
             durationMap[v.id] = v.contentDetails.duration;
@@ -602,10 +654,10 @@ const App = () => {
       const newVideos = allItems.map(item => {
         const vidId = item.snippet.resourceId.videoId;
         const isoDuration = durationMap[vidId];
-        return { 
-          id: vidId, 
-          title: item.snippet.title, 
-          duration: isoDuration || '??:??' 
+        return {
+          id: vidId,
+          title: item.snippet.title,
+          duration: isoDuration || '??:??'
         };
       });
 
@@ -626,7 +678,7 @@ const App = () => {
         notes: {},
         updatedAt: Date.now()
       } : p));
-      
+
       // STEP 6: Activate playlist and switch view AFTER import completes
       setActivePlaylistId(shell.id);
       setVideos(newVideos);
@@ -635,10 +687,10 @@ const App = () => {
       setNotes({});
       setView('playlist');
       setIsSidebarOpen(true);
-      
+
       localStorage.setItem('playlist-tracker-onboarded', '1');
       alert(`✓ Successfully imported ${newVideos.length} video${newVideos.length === 1 ? '' : 's'}!`);
-      
+
     } catch (error) {
       // If import fails, remove the empty playlist shell
       alert(`Import failed: ${error.message}`);
@@ -689,6 +741,21 @@ const App = () => {
     setNewVideoTitle('');
   };
 
+  const handleReloadPlayer = () => {
+    // Force destroy and recreate the player
+    if (playerRef.current && playerRef.current.destroy) {
+      playerRef.current.destroy();
+      playerRef.current = null;
+    }
+
+    // Give a brief moment for cleanup, then reinitialize
+    setTimeout(() => {
+      if (currentVideo && window.YT && window.YT.Player) {
+        initializePlayer();
+      }
+    }, 200);
+  };
+
   // --- Other Handlers ---
 
   const handleNoteChange = (e) => {
@@ -700,7 +767,7 @@ const App = () => {
   };
 
   const toggleCheck = (e, id) => {
-    e.stopPropagation(); 
+    e.stopPropagation();
     setCheckedIds(prev => {
       if (prev.includes(id)) return prev.filter(i => i !== id);
       updateStreakOnCompletion();
@@ -731,9 +798,9 @@ const App = () => {
               </div>
               <span className="text-[10px] text-neutral-500 font-medium tracking-wide italic">Let's get shit done</span>
             </button>
-            
+
             <div className="w-px h-6 bg-neutral-800 hidden md:block ml-2"></div>
-            
+
             {/* GitHub & Coffee Links */}
             <a
               href={GITHUB_REPO_URL}
@@ -909,14 +976,14 @@ const App = () => {
                   {/* Thumbnail */}
                   {pl.thumbnail && (
                     <div className="aspect-video w-full bg-neutral-950 overflow-hidden">
-                      <img 
-                        src={pl.thumbnail} 
+                      <img
+                        src={pl.thumbnail}
                         alt={pl.name}
                         className="w-full h-full object-cover"
                       />
                     </div>
                   )}
-                  
+
                   <div className="p-4 flex flex-col gap-3 flex-1">
                     {/* Title Section */}
                     <div className="space-y-1">
@@ -1013,11 +1080,11 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-cyan-500/30">
-      
+
       {/* Navbar */}
       <nav className="h-16 border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-md fixed top-0 w-full z-50 flex items-center justify-between px-4 lg:px-8">
         <div className="flex items-center gap-3">
-          <button 
+          <button
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
             className="p-2 hover:bg-neutral-800 rounded-lg transition-colors lg:hidden"
           >
@@ -1030,9 +1097,9 @@ const App = () => {
             </div>
             <span className="text-[10px] text-neutral-500 font-medium tracking-wide italic">Let's get shit done</span>
           </button>
-          
+
           <div className="w-px h-6 bg-neutral-800 hidden md:block ml-2"></div>
-          
+
           {/* GitHub & Coffee Links */}
           <a
             href={GITHUB_REPO_URL}
@@ -1059,22 +1126,22 @@ const App = () => {
           <div className="text-sm font-semibold text-neutral-300 max-w-xs truncate">
             {activePlaylist?.name}
           </div>
-          
+
           <div className="w-px h-6 bg-neutral-800"></div>
-          
+
           <div className="flex items-center gap-1 text-sm font-bold" style={{ color: streak.current ? '#f97316' : '#9ca3af' }} title={`Best streak: ${streak.best} day${streak.best === 1 ? '' : 's'}`}>
             <Flame size={16} />
             <span>{streak.current}d</span>
           </div>
-          
+
           <div className="w-px h-6 bg-neutral-800"></div>
-          
+
           <div className="text-xs font-mono text-neutral-300">
             {stats.completed} <span className="text-neutral-600">/</span> {stats.total}
           </div>
-          
+
           <div className="w-px h-6 bg-neutral-800"></div>
-          
+
           <div style={{ color: 'var(--theme-text)' }} className="text-sm font-bold">{stats.percentage}%</div>
         </div>
 
@@ -1119,24 +1186,24 @@ const App = () => {
               </div>
             )}
           </div>
-          
+
           {/* Circular Progress */}
           <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center relative overflow-hidden ring-2 ring-neutral-800">
-             <div 
-               className="absolute bottom-0 left-0 w-full transition-all duration-500"
-               style={{ height: `${stats.percentage}%`, backgroundColor: THEMES[currentTheme].bg }}
-             ></div>
-             {stats.percentage === 100 ? <Trophy size={18} className="text-yellow-400 z-10" /> : <span className="text-xs font-bold z-10">{checkedIds.length}</span>}
+            <div
+              className="absolute bottom-0 left-0 w-full transition-all duration-500"
+              style={{ height: `${stats.percentage}%`, backgroundColor: THEMES[currentTheme].bg }}
+            ></div>
+            {stats.percentage === 100 ? <Trophy size={18} className="text-yellow-400 z-10" /> : <span className="text-xs font-bold z-10">{checkedIds.length}</span>}
           </div>
         </div>
       </nav>
 
       {/* Main Layout */}
       <div className="pt-16 flex h-screen overflow-hidden">
-        
+
         {/* Left: Content Area */}
         <main className={`flex-1 h-full overflow-y-auto bg-neutral-900 transition-all duration-300 relative ${isSidebarOpen && !isMobile ? 'mr-96' : ''}`}>
-          
+
           <div className="w-full max-w-5xl mx-auto p-4 lg:p-8 pb-32">
             {videos.length > 0 ? (
               <>
@@ -1150,22 +1217,32 @@ const App = () => {
                   <div>
                     <h1 className="text-xl md:text-2xl font-bold text-white leading-tight">{currentVideo?.title}</h1>
                     <div className="flex items-center gap-3 mt-2 text-sm text-neutral-400">
-                       <span className="bg-neutral-800 px-2 py-0.5 rounded text-xs font-mono text-neutral-300">
-                         {/* Display simplified duration if possible, or raw if it's colon format */}
-                         {currentVideo.duration.startsWith('PT') ? formatSecondsToTime(parseDurationToSeconds(currentVideo.duration)) : currentVideo.duration}
-                       </span>
-                       <span className="w-1 h-1 bg-neutral-600 rounded-full"></span>
-                       <span>ID: {currentVideo?.id}</span>
+                      <span className="bg-neutral-800 px-2 py-0.5 rounded text-xs font-mono text-neutral-300">
+                        {/* Display simplified duration if possible, or raw if it's colon format */}
+                        {currentVideo.duration.startsWith('PT') ? formatSecondsToTime(parseDurationToSeconds(currentVideo.duration)) : currentVideo.duration}
+                      </span>
+                      <span className="w-1 h-1 bg-neutral-600 rounded-full"></span>
+                      <span>ID: {currentVideo?.id}</span>
                     </div>
                   </div>
-                  
-                  <button 
-                    onClick={(e) => openInNewTab(e, currentVideo?.id)}
-                    className="flex items-center gap-2 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-all font-medium text-xs whitespace-nowrap"
-                  >
-                    <span>Open in YouTube</span>
-                    <ExternalLink size={14} className="text-neutral-400" />
-                  </button>
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleReloadPlayer}
+                      className="flex items-center gap-2 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-all font-medium text-xs whitespace-nowrap"
+                      title="Reload video player if it's not working"
+                    >
+                      <RefreshCw size={14} />
+                      <span className="hidden sm:inline">Reload</span>
+                    </button>
+                    <button
+                      onClick={(e) => openInNewTab(e, currentVideo?.id)}
+                      className="flex items-center gap-2 px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-all font-medium text-xs whitespace-nowrap"
+                    >
+                      <span>Open in YouTube</span>
+                      <ExternalLink size={14} className="text-neutral-400" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Notes Section */}
@@ -1244,10 +1321,9 @@ const App = () => {
         </main>
 
         {/* Right: Sidebar */}
-        <aside 
-          className={`fixed lg:absolute top-16 bottom-0 right-0 w-full lg:w-96 bg-neutral-950 border-l border-neutral-800 transform transition-transform duration-300 z-40 flex flex-col ${
-            isSidebarOpen ? 'translate-x-0' : 'translate-x-full'
-          }`}
+        <aside
+          className={`fixed lg:absolute top-16 bottom-0 right-0 w-full lg:w-96 bg-neutral-950 border-l border-neutral-800 transform transition-transform duration-300 z-40 flex flex-col ${isSidebarOpen ? 'translate-x-0' : 'translate-x-full'
+            }`}
         >
           {/* Header */}
           <div className="p-4 border-b border-neutral-800 bg-neutral-950 flex flex-col gap-4">
@@ -1272,10 +1348,10 @@ const App = () => {
             {/* Edit / Import Panel */}
             {isEditMode && (
               <div className="animate-in fade-in slide-in-from-top-2 duration-200 space-y-4 bg-neutral-900/50 p-3 rounded-xl border border-neutral-800">
-                
+
                 {/* Manual Add */}
                 <div className="space-y-2">
-                   <h3 className="text-xs font-bold text-neutral-400 uppercase tracking-wide flex items-center gap-2">
+                  <h3 className="text-xs font-bold text-neutral-400 uppercase tracking-wide flex items-center gap-2">
                     <Plus size={12} /> Manually Add
                   </h3>
                   <form onSubmit={handleAddManualVideo} className="flex flex-col gap-2">
@@ -1302,31 +1378,31 @@ const App = () => {
                     </div>
                   </form>
                 </div>
-                
+
                 <div className="border-t border-neutral-800 pt-2 flex justify-center">
-                   <button 
+                  <button
                     onClick={() => {
-                      if(window.confirm('Reset all data?')) { 
-                        setVideos([]); 
+                      if (window.confirm('Reset all data?')) {
+                        setVideos([]);
                         setCurrentVideo(null);
-                        setCheckedIds([]); 
+                        setCheckedIds([]);
                         setNotes({});
                         setShowOnboarding(true);
                         localStorage.removeItem('playlist-tracker-onboarded');
                       }
                     }}
                     className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 hover:underline"
-                   >
-                     <RotateCcw size={10} /> Reset
-                   </button>
+                  >
+                    <RotateCcw size={10} /> Reset
+                  </button>
                 </div>
               </div>
             )}
           </div>
-          
+
           {/* Progress Bar */}
           <div className="h-1 w-full bg-neutral-900">
-            <div 
+            <div
               className="h-full transition-all duration-500"
               style={{
                 width: `${stats.percentage}%`,
@@ -1343,7 +1419,7 @@ const App = () => {
               const hasNotes = notes[video.id] && notes[video.id].trim().length > 0;
 
               return (
-                <div 
+                <div
                   key={video.id + index}
                   onClick={() => !isEditMode && playVideo(video)}
                   className={`
@@ -1358,7 +1434,7 @@ const App = () => {
                 >
                   {/* Checkbox */}
                   {isEditMode ? (
-                     <div className="text-neutral-600"><MoreVertical size={16} /></div>
+                    <div className="text-neutral-600"><MoreVertical size={16} /></div>
                   ) : (
                     <button
                       onClick={(e) => toggleCheck(e, video.id)}
@@ -1388,15 +1464,15 @@ const App = () => {
 
                   {/* Delete (Edit Mode) */}
                   {isEditMode && (
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if(window.confirm('Delete?')) setVideos(videos.filter(v => v.id !== video.id));
-                        }}
-                        className="p-2 text-neutral-500 hover:text-red-400"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm('Delete?')) setVideos(videos.filter(v => v.id !== video.id));
+                      }}
+                      className="p-2 text-neutral-500 hover:text-red-400"
+                    >
+                      <Trash2 size={16} />
+                    </button>
                   )}
                 </div>
               );
