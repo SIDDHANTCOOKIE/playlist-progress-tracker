@@ -1,70 +1,84 @@
-# Getting Started with Create React App
+# PlaylistTrack 🎧📚
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+PlaylistTrack is a focused YouTube playlist tracker built for learners. Create multiple playlists, import YouTube playlists, track progress video by video, write notes, and maintain a daily learning streak. Everything is stored locally in your browser, no login required.
 
-## Available Scripts
+---
 
-In the project directory, you can run:
+## ✨ Features
 
-### `npm start`
+- Multi playlist dashboard with progress cards  
+- Import YouTube playlists including title, videos, duration, and thumbnail  
+- Track progress per playlist and per video  
+- Write notes for each video with download support  
+- Daily streak tracking with best streak tooltip  
+- Responsive YouTube player with sidebar and stats  
+- Theme selector for personalization  
+- Fully local storage based, no backend required  
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+---
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## 🛠 Tech Stack
 
-### `npm test`
+- React  
+- Tailwind CSS  
+- YouTube Data API v3  
+- YouTube IFrame Player API  
+- LocalStorage  
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+---
 
-### `npm run build`
+## 🚀 Local Setup
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+Follow these steps to run the project locally.
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+---
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+### 1. Install prerequisites
 
-### `npm run eject`
+Make sure you have the following installed:
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+- Node.js 18 or higher  
+- Git  
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+Check versions:
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+```bash
+node -v
+npm -v
+git --version
+ ```
+---
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+### 2. Clone the repository
 
-## Learn More
+Clone the repository using Git:
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+```bash
+git clone https://github.com/YOURUSERNAME/playlist-progress-tracker/settings
+cd playlist-progress-tracker
+```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+### 3. Install dependencies
+npm install
 
-### Code Splitting
+### 4. Set up YouTube API key
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+You need a YouTube Data API v3 key to import playlists.
 
-### Analyzing the Bundle Size
+Option A: Using .env file (recommended)
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+Create a file named .env in the project root and add:
 
-### Making a Progressive Web App
+REACT_APP_YOUTUBE_API_KEY=your_api_key_here
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
 
-### Advanced Configuration
+Restart the development server after adding the key.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+### 5. Start the development server
+npm start
 
-### Deployment
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+The app will run at:
 
-### `npm run build` fails to minify
+http://localhost:3000
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
